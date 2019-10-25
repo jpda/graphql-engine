@@ -122,7 +122,7 @@ if [ "$MODE" = "graphql-engine" ]; then
   echo_pretty "or press CTRL-C and invoke graphql-engine manually"
   wait_docker_postgres
 
-  RUN_INVOCATION="stack exec graphql-engine -- --database-url='$DB_URL' serve --enable-console --console-assets-dir \'$PROJECT_ROOT/console/static/dist\' +RTS -N -T -RTS ${PIPE_JQ-}"
+  RUN_INVOCATION="stack exec graphql-engine -- --database-url='$DB_URL' serve --enable-console --console-assets-dir $PROJECT_ROOT/console/static/dist +RTS -N -T -RTS ${PIPE_JQ-}"
 
   echo_pretty "About to do:"
   echo_pretty "    $ $BUILD_INVOCATION"

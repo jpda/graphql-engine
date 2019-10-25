@@ -45,6 +45,7 @@ import qualified Data.Text.Encoding              as T
 import qualified Network.HTTP.Client             as HTTP
 import qualified Network.HTTP.Types              as HTTP
 import qualified Network.Wreq                    as Wreq
+import qualified Debug.Trace as D
 
 
 newtype RawJWT = RawJWT BL.ByteString
@@ -66,6 +67,8 @@ data JWTConfig
   , jcAudience     :: !(Maybe Jose.Audience)
   , jcClaimsFormat :: !(Maybe JWTClaimsFormat)
   , jcIssuer       :: !(Maybe Jose.StringOrURI)
+  , jcAllowedRole  :: !(Maybe T.Text)
+  , jcDefaultClaimPrefix :: !(Maybe T.Text)
   } deriving (Show, Eq)
 
 data JWTCtx
@@ -75,11 +78,13 @@ data JWTCtx
   , jcxAudience     :: !(Maybe Jose.Audience)
   , jcxClaimsFormat :: !JWTClaimsFormat
   , jcxIssuer       :: !(Maybe Jose.StringOrURI)
+  , jcxAllowedRole  :: !(Maybe T.Text)
+  , jcxDefaultClaimPrefix :: !(Maybe T.Text)
   } deriving (Eq)
 
 instance Show JWTCtx where
-  show (JWTCtx _ nsM audM cf iss) =
-    show ["<IORef JWKSet>", show nsM, show audM, show cf, show iss]
+  show (JWTCtx _ nsM audM cf iss allowedRoleClaim claimPrefix) =
+    show ["<IORef JWKSet>", show nsM, show audM, show cf, show iss, show allowedRoleClaim, show claimPrefix]
 
 data HasuraClaims
   = HasuraClaims
@@ -89,13 +94,16 @@ data HasuraClaims
 $(A.deriveJSON (A.aesonDrop 3 A.snakeCase) ''HasuraClaims)
 
 allowedRolesClaim :: T.Text
-allowedRolesClaim = "x-hasura-allowed-roles"
+allowedRolesClaim = "roles"
 
 defaultRoleClaim :: T.Text
-defaultRoleClaim = "x-hasura-default-role"
+defaultRoleClaim = "roles"
 
 defaultClaimNs :: T.Text
 defaultClaimNs = "https://hasura.io/jwt/claims"
+
+defaultClaimPrefix :: T.Text
+defaultClaimPrefix = "x-hasura-"
 
 -- | if the time is greater than 100 seconds, should refresh the JWK 10 seonds
 -- before the expiry, else refresh at given seconds
@@ -227,14 +235,16 @@ processAuthZHeader jwtCtx headers authzHeader = do
       expTimeM = fmap (\(Jose.NumericDate t) -> t) $ claims ^. Jose.claimExp
 
   -- see if the hasura claims key exist in the claims map
-  let mHasuraClaims = Map.lookup claimsNs $ claims ^. Jose.unregisteredClaims
-  hasuraClaimsV <- maybe claimsNotFound return mHasuraClaims
-
+  --let mHasuraClaims = Map.lookupDefault (A.toJSON Jose.unregisteredClaims) claimsNs $ claims ^. Jose.unregisteredClaims
+  let extraClaims = A.toJSON $ claims ^. Jose.unregisteredClaims
+  let hasuraClaimsV = Map.lookupDefault extraClaims claimsNs $ claims ^. Jose.unregisteredClaims
+  -- hasuraClaimsV <- return mHasuraClaims
+  D.trace CS.cs extraClaims
   -- get hasura claims value as an object. parse from string possibly
   hasuraClaims <- parseObjectFromString claimsFmt hasuraClaimsV
 
   -- filter only x-hasura claims and convert to lower-case
-  let claimsMap = Map.filterWithKey (\k _ -> T.isPrefixOf "x-hasura-" k)
+  let claimsMap = Map.filterWithKey (\k _ -> T.isPrefixOf (fromMaybe defaultClaimPrefix $ jcxDefaultClaimPrefix jwtCtx) k) -- defaultClaimPrefix formerly hard string of x-hasura-
                 $ Map.fromList $ map (first T.toLower)
                 $ Map.toList hasuraClaims
 
@@ -296,9 +306,9 @@ processAuthZHeader jwtCtx headers authzHeader = do
       throw400 InvalidHeaders "Malformed Authorization header"
     currRoleNotAllowed =
       throw400 AccessDenied "Your current role is not in allowed roles"
-    claimsNotFound = do
-      let claimsNs = fromMaybe defaultClaimNs $ jcxClaimNs jwtCtx
-      throw400 JWTInvalidClaims $ "claims key: '" <> claimsNs <> "' not found"
+    -- claimsNotFound = do
+    --   let claimsNs = fromMaybe defaultClaimNs $ jcxClaimNs jwtCtx
+    --   throw400 JWTInvalidClaims $ "claims key: '" <> claimsNs <> "' not found"
 
 
 -- parse x-hasura-allowed-roles, x-hasura-default-role from JWT claims
@@ -318,11 +328,11 @@ parseHasuraClaims claimsMap = do
 
   where
     missingAllowedRolesClaim =
-      let msg = "JWT claim does not contain " <> allowedRolesClaim
+      let msg = "JWT claim does not contain " <> allowedRolesClaim <> bsToTxt (BLC.toStrict (A.encode (A.toJSON claimsMap)))
       in throw400 JWTRoleClaimMissing msg
 
     missingDefaultRoleClaim =
-      let msg = "JWT claim does not contain " <> defaultRoleClaim
+      let msg = "JWT claim does not contain " <> defaultRoleClaim <> bsToTxt (BLC.toStrict (A.encode (A.toJSON claimsMap)))
       in throw400 JWTRoleClaimMissing msg
 
     errMsg _ = "invalid " <> allowedRolesClaim <> "; should be a list of roles"
@@ -360,7 +370,7 @@ verifyJwt ctx (RawJWT rawJWT) = do
 
 
 instance A.ToJSON JWTConfig where
-  toJSON (JWTConfig ty keyOrUrl claimNs aud claimsFmt iss) =
+  toJSON (JWTConfig ty keyOrUrl claimNs aud claimsFmt iss allowedRoleClaimName defaultClaimPrefixName) =
     case keyOrUrl of
          Left _    -> mkObj ("key" A..= A.String "<JWK REDACTED>")
          Right url -> mkObj ("jwk_url" A..= url)
@@ -371,6 +381,8 @@ instance A.ToJSON JWTConfig where
                             , "audience" A..= aud
                             , "issuer" A..= iss
                             , item
+                            , "allowed_role_claim_name" A..= allowedRoleClaimName
+                            , "claim_prefix_name" A..= defaultClaimPrefixName
                             ]
 
 -- | Parse from a json string like:
@@ -386,15 +398,18 @@ instance A.FromJSON JWTConfig where
     iss     <- o A..:? "issuer"
     jwkUrl  <- o A..:? "jwk_url"
     isStrngfd <- o A..:? "claims_format"
+    allowedRoleClaimName <- o A..:? "allowed_role_claim_name"
+    defaultClaimPrefixName <- o A..:? "claim_prefix_name"
+
 
     case (mRawKey, jwkUrl) of
       (Nothing, Nothing) -> fail "key and jwk_url both cannot be empty"
       (Just _, Just _)   -> fail "key, jwk_url both cannot be present"
       (Just rawKey, Nothing) -> do
         key <- parseKey keyType rawKey
-        return $ JWTConfig keyType (Left key) claimNs aud isStrngfd iss
+        return $ JWTConfig keyType (Left key) claimNs aud isStrngfd iss allowedRoleClaimName defaultClaimPrefixName
       (Nothing, Just url) ->
-        return $ JWTConfig keyType (Right url) claimNs aud isStrngfd iss
+        return $ JWTConfig keyType (Right url) claimNs aud isStrngfd iss allowedRoleClaimName defaultClaimPrefixName
 
     where
       parseKey keyType rawKey =
