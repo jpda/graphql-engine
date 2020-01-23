@@ -105,7 +105,7 @@ defaultClaimNs :: T.Text
 defaultClaimNs = "https://hasura.io/jwt/claims"
 
 defaultClaimPrefix :: T.Text
-defaultClaimPrefix = "x-hasura-"
+defaultClaimPrefix = ""
 
 -- | if the time is greater than 100 seconds, should refresh the JWK 10 seonds
 -- before the expiry, else refresh at given seconds
@@ -192,7 +192,7 @@ updateJwkRef (Logger logger) manager url jwkRef = do
      fmapL (const parseCacheControlErr) . AT.parseOnly cacheControlHeaderParser
 
     cacheControlHeaderParser :: AT.Parser Integer
-    cacheControlHeaderParser = ("s-maxage=" <|> "max-age=") *> AT.decimal
+    cacheControlHeaderParser = ("s-maxage=" <|> "private, max-age=") *> AT.decimal
 
     parseCacheControlErr =
       "Failed parsing Cache-Control header from JWK response. Could not find max-age or s-maxage"
@@ -217,7 +217,6 @@ updateJwkRef (Logger logger) manager url jwkRef = do
       HTTP.InvalidUrlException _ reason -> show reason
 
     timeFmt = "%a, %d %b %Y %T GMT"
-
 
 -- | Process the request headers to verify the JWT and extract UserInfo from it
 processJwt
@@ -262,11 +261,11 @@ processAuthZHeader jwtCtx headers authzHeader = do
       expTimeM = fmap (\(Jose.NumericDate t) -> t) $ claims ^. Jose.claimExp
 
   -- see if the hasura claims key exist in the claims map
-  --let mHasuraClaims = Map.lookupDefault (A.toJSON Jose.unregisteredClaims) claimsNs $ claims ^. Jose.unregisteredClaims
-  let extraClaims = A.toJSON $ claims ^. Jose.unregisteredClaims
-  let hasuraClaimsV = Map.lookupDefault extraClaims claimsNs $ claims ^. Jose.unregisteredClaims
-  -- hasuraClaimsV <- return mHasuraClaims
-  D.trace CS.cs extraClaims
+  let mHasuraClaims = Map.lookup claimsNs $ claims ^. Jose.unregisteredClaims
+  --let extraClaims = A.toJSON $ claims ^. Jose.unregisteredClaims
+  let hasuraClaimsV = Map.lookupDefault claimsNs $ claims ^. Jose.unregisteredClaims
+  hasuraClaimsV <- maybe claimsNotFound return mHasuraClaims
+  
   -- get hasura claims value as an object. parse from string possibly
   hasuraClaims <- parseObjectFromString claimsFmt hasuraClaimsV
 
@@ -333,9 +332,9 @@ processAuthZHeader jwtCtx headers authzHeader = do
       throw400 InvalidHeaders "Malformed Authorization header"
     currRoleNotAllowed =
       throw400 AccessDenied "Your current role is not in allowed roles"
-    -- claimsNotFound = do
-    --   let claimsNs = fromMaybe defaultClaimNs $ jcxClaimNs jwtCtx
-    --   throw400 JWTInvalidClaims $ "claims key: '" <> claimsNs <> "' not found"
+    claimsNotFound = do
+      let claimsNs = fromMaybe defaultClaimNs $ jcxClaimNs jwtCtx
+      throw400 JWTInvalidClaims $ "claims key: '" <> claimsNs <> "' not found"
 
 
 -- parse x-hasura-allowed-roles, x-hasura-default-role from JWT claims
