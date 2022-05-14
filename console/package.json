@@ -74,7 +74,7 @@
     "multireducer": "^1.0.2",
     "piping": "^0.3.2",
     "prettier": "^1.16.4",
-    "pretty-error": "^1.2.0",
+    "pretty-error": "^2.0.0",
     "prop-types": "^15.6.0",
     "query-string": "^6.1.0",
     "react": "16.8.2",
