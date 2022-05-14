@@ -12,7 +12,7 @@
     "@apollo/react-hooks": "^3.1.1",
     "apollo-boost": "^0.4.4",
     "apollo-link-http": "^1.5.5",
-    "gatsby": "^2.0.9",
+    "gatsby": "^3.13.0",
     "gatsby-link": "^2.0.2",
     "gatsby-source-graphql": "^2.0.2",
     "isomorphic-fetch": "^2.2.1",
